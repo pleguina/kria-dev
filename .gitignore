@@ -1,0 +1,44 @@
+# Vivado and generated build output
+.Xil/
+vivado/.Xil/
+vivado/build/
+vivado/out/*.bit
+vivado/out/*.bit.bin
+vivado/out/*.xsa
+vivado/out/*.ltx
+vivado/out/*.rpt
+driver/build_out/
+package/.Xil/
+package/*.bit
+package/*.bit.bin
+
+# Intermediate and obsolete bring-up variants
+overlay/kv260_imx477_v*.dts
+package/kv260_imx477_v*/
+
+# Local investigation artifacts and hardware access material
+EXPERIMENT_LOG.md
+STATUS.md
+scratchpad/
+routeB/
+images/
+01_kria_state_initial.txt
+03_dmesg_after_smartcam.txt
+00_collect.sh
+02_kv260-smartcam_overlay.dts
+KV260_IMX477_bringup_guide.md
+IMX477-DS.pdf
+kernel_ref/
+pynq_ref/
+overlay/kv260_imx477_full.dts
+package/&1
+package/loadtest_out_1.txt
+vivado/.srcs/
+vivado/vivado.log
+vivado/xdc/base_ref.xdc
+&1
+
+# Editor and OS files
+*.swp
+*~
+.DS_Store

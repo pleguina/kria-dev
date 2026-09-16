@@ -1,0 +1,238 @@
+/dts-v1/;
+/plugin/;
+
+/* KV260 IMX477 raw-CSI capture overlay
+ * PL:  camctl bitstream (kv260_imx477.bit.bin)
+ * Pipeline:  imx477@1a -> csiss@80000000 -> demosaic@80040000 (Bayer->RGB, fixed
+ *            8-bit/channel output per hardware -- see xilinx-demosaic below)
+ *            -> vcap (/dev/videoN)   (DMA via v_frmbuf_wr@80010000, bgr888)
+ * I2C to J9 is via axi_iic@80030000 -> carrier pca9546@74 -> channel 2 ("RPICAM")
+ * demosaic is required: xilinx-csi2rxss only ever reports Bayer-tagged mbus codes for
+ * RAW10 data, xilinx_frmbuf's format table has no Bayer entry at all -- confirmed on
+ * hardware (EXPERIMENT_LOG.md 2026-09-11 14:43) that skipping it makes
+ * dmaengine_prep_interleaved_dma fail every time ("Invalid dma template or missing
+ * dma video fmt config"), matching every AMD reference design (PYNQ's own `base`
+ * included) which always demosaics before its VDMA/frame writer.
+ */
+
+/ {
+	fragment@0 {
+		target = <&fpga_full>;
+		__overlay__ {
+			#address-cells = <2>;
+			#size-cells = <2>;
+			firmware-name = "kv260_imx477.bit.bin";
+			resets = <&zynqmp_reset 0x74 &zynqmp_reset 0x75 &zynqmp_reset 0x76 &zynqmp_reset 0x77>;
+		};
+	};
+
+	fragment@1 {
+		target = <&amba>;
+		__overlay__ {
+			/* ZynqMP AFI (AXI FIFO Interface) config at each PS<->PL AXI boundary port,
+			 * copied verbatim from the working kv260-smartcam overlay. Its absence is
+			 * what turned axi_iic's first real register access into an async SError
+			 * (confirmed on hardware in v1e/v1f -- see EXPERIMENT_LOG.md 2026-09-11). */
+			afi0 {
+				compatible = "xlnx,afi-fpga";
+				config-afi = <0x00 0x00 0x01 0x00 0x02 0x00 0x03 0x00 0x04 0x00 0x05 0x00 0x06 0x00 0x07 0x00 0x08 0x00 0x09 0x00 0x0a 0x00 0x0b 0x00 0x0c 0x00 0x0d 0x00 0x0e 0x00 0x0f 0x00>;
+			};
+
+			/* PL fabric clocks (pl_clk0/1/2) as fixed-clocks */
+			misc_clk_0: misc_clk_0 { #clock-cells = <0>; compatible = "fixed-clock"; clock-frequency = <99999000>;  };
+			misc_clk_1: misc_clk_1 { #clock-cells = <0>; compatible = "fixed-clock"; clock-frequency = <200000000>; };
+			misc_clk_2: misc_clk_2 { #clock-cells = <0>; compatible = "fixed-clock"; clock-frequency = <200000000>; };
+
+			/* The Arducam UC-517 is self-clocked (on-board 24 MHz osc).
+			 * The imx477 driver still insists on a 24 MHz 'xclk' whose rate it verifies,
+			 * so give it a fixed-clock that is not physically wired anywhere. */
+			imx477_xclk: imx477_xclk { #clock-cells = <0>; compatible = "fixed-clock"; clock-frequency = <24000000>; };
+		};
+	};
+
+	fragment@2 {
+		target = <&amba>;
+		__overlay__ {
+
+			axi_iic_cam: i2c@80030000 {
+				compatible = "xlnx,axi-iic-2.1", "xlnx,xps-iic-2.00.a";
+				reg = <0x0 0x80030000 0x0 0x10000>;
+				interrupt-parent = <&gic>;
+				interrupts = <0 91 4>;
+				interrupt-names = "iic2intc_irpt";
+				clocks = <&misc_clk_0>;
+				clock-names = "s_axi_aclk";
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				cam_i2c_mux: i2c-mux@74 {
+					compatible = "nxp,pca9546";
+					reg = <0x74>;
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					i2c@0 { reg = <0>; #address-cells = <1>; #size-cells = <0>; };
+					i2c@1 { reg = <1>; #address-cells = <1>; #size-cells = <0>; };
+
+					cam_i2c: i2c@2 {
+						reg = <2>;
+						#address-cells = <1>;
+						#size-cells = <0>;
+						label = "RPICAM";
+
+						imx477: sensor@1a {
+							compatible = "sony,imx477";
+							reg = <0x1a>;
+							clocks = <&imx477_xclk>;
+							clock-names = "xclk";
+							rotation = <0>;
+							orientation = <2>;
+
+							port {
+								imx477_out: endpoint {
+									remote-endpoint = <&csi_in>;
+									clock-lanes = <0>;
+									data-lanes = <1 2>;
+									link-frequencies = /bits/ 64 <450000000>;
+								};
+							};
+						};
+					};
+				};
+			};
+
+			rst_gpio: gpio@80020000 {
+				compatible = "xlnx,axi-gpio-2.0", "xlnx,xps-gpio-1.00.a";
+				reg = <0x0 0x80020000 0x0 0x10000>;
+				#gpio-cells = <2>;
+				gpio-controller;
+				xlnx,all-outputs = <1>;
+				xlnx,gpio-width = <1>;
+				xlnx,is-dual = <0>;
+				clocks = <&misc_clk_0>;
+			};
+
+			rst_gpio2: gpio@80050000 {
+				compatible = "xlnx,axi-gpio-2.0", "xlnx,xps-gpio-1.00.a";
+				reg = <0x0 0x80050000 0x0 0x10000>;
+				#gpio-cells = <2>;
+				gpio-controller;
+				xlnx,all-outputs = <1>;
+				xlnx,gpio-width = <1>;
+				xlnx,is-dual = <0>;
+				clocks = <&misc_clk_0>;
+			};
+
+			csiss: csi2rxss@80000000 {
+				compatible = "xlnx,mipi-csi2-rx-subsystem-5.0";
+				reg = <0x0 0x80000000 0x0 0x10000>;
+				interrupt-parent = <&gic>;
+				interrupts = <0 89 4>;
+				clocks = <&misc_clk_0>, <&misc_clk_2>;
+				clock-names = "lite_aclk", "video_aclk";
+				xlnx,csi-pxl-format = <0x2b>;      /* MIPI RAW10 */
+				xlnx,vfb;
+				xlnx,ppc = <1>;
+				xlnx,axis-tdata-width = <32>;
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0>;
+						xlnx,video-format = <12>;   /* XVIP_VF_MONO_SENSOR */
+						xlnx,video-width = <10>;
+						/* No xlnx,cfa-pattern: MONO_SENSOR+width10 with no cfa-pattern
+						 * maps to V4L2_PIX_FMT_XY10 (xilinx-vip.c), matching v_frmbuf_wr's
+						 * "y10" format entry (xilinx_frmbuf.c) exactly. With cfa-pattern
+						 * set it maps to V4L2_PIX_FMT_SRGGB10 instead, which v_frmbuf_wr's
+						 * format table has no entry for at all -- confirmed on hardware
+						 * to fail dmaengine_prep_interleaved_dma ("Invalid dma template
+						 * or missing dma video fmt config"). Bayer reassembly moves to
+						 * software on the captured raw bytes instead. */
+						csi_in: endpoint {
+							data-lanes = <1 2>;
+							remote-endpoint = <&imx477_out>;
+						};
+					};
+
+					port@1 {
+						reg = <1>;
+						xlnx,video-format = <12>;
+						xlnx,video-width = <10>;
+						csi_out: endpoint {
+							remote-endpoint = <&demosaic_in>;
+						};
+					};
+				};
+			};
+
+			demosaic: v_demosaic@80040000 {
+				compatible = "xlnx,v-demosaic";
+				reg = <0x0 0x80040000 0x0 0x10000>;
+				/* xvip_init_resources() (xilinx-vip.c, shared by every xilinx-vip-family
+				 * driver incl. demosaic) does devm_clk_get(dev, NULL) -- an unnamed
+				 * single clock -- unconditionally. Missing it is why the first load
+				 * failed clean with "probe ... failed with error -5" (EIO). */
+				clocks = <&misc_clk_2>;
+				reset-gpios = <&rst_gpio2 0 1>;   /* GPIO_ACTIVE_LOW */
+				xlnx,max-width = <4096>;
+				xlnx,max-height = <4096>;
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0>;
+						demosaic_in: endpoint {
+							remote-endpoint = <&csi_out>;
+						};
+					};
+
+					port@1 {
+						reg = <1>;
+						demosaic_out: endpoint {
+							remote-endpoint = <&vcap_in>;
+						};
+					};
+				};
+			};
+
+			fb_wr: v_frmbuf_wr@80010000 {
+				compatible = "xlnx,axi-frmbuf-wr-v2.2";
+				reg = <0x0 0x80010000 0x0 0x10000>;
+				interrupt-parent = <&gic>;
+				interrupts = <0 90 4>;
+				clocks = <&misc_clk_2>;
+				clock-names = "ap_clk";
+				reset-gpios = <&rst_gpio 0 1>;   /* GPIO_ACTIVE_LOW */
+				#dma-cells = <1>;
+				xlnx,dma-addr-width = <32>;
+				xlnx,pixels-per-clock = <1>;
+				xlnx,max-width = <4096>;
+				xlnx,max-height = <4096>;
+				xlnx,vid-formats = "bgr888";
+			};
+
+			vcap_imx477: vcap_imx477 {
+				compatible = "xlnx,video";
+				dmas = <&fb_wr 0>;
+				dma-names = "port0";
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+					port@0 {
+						reg = <0>;
+						direction = "input";
+						vcap_in: endpoint {
+							remote-endpoint = <&demosaic_out>;
+						};
+					};
+				};
+			};
+		};
+	};
+};
