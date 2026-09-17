@@ -15,6 +15,10 @@ IMX477 (2-lane MIPI CSI-2 RAW10)
 The final hardware test reached live RGB video on Ubuntu 22.04.5 with the
 `5.15.0-1077-xilinx-zynqmp` kernel. The design is built with Vivado 2024.1.
 
+This board's SD card is shared with other Kria projects (PYNQ/DPU, etc.). If
+you need to switch this board to a different project and back, see
+[`SWITCHING.md`](SWITCHING.md) first.
+
 ## What is included
 
 - `vivado/tcl/`: block-design and synthesis/implementation scripts.
