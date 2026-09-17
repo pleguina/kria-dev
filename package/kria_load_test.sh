@@ -46,11 +46,17 @@ say "try to configure + capture (SRGGB10 1332x990, adjust as needed)"
 MED=/dev/media0
 W=1332; H=990
 if [ -e "$MED" ]; then
-  media-ctl -d $MED -V "'imx477 "$(media-ctl -d $MED -p | grep -o 'imx477 [0-9-]*' | head -1 | cut -d' ' -f2)"':0 [fmt:SRGGB10_1X10/${W}x${H}]" 2>&1
-  # generic: set the same fmt on every subdev pad
-  for e in $(media-ctl -d $MED -p 2>/dev/null | grep -oE '"[^"]+":[0-9]+' | tr -d '"' | sort -u); do
-    media-ctl -d $MED -V "$e [fmt:SRGGB10_1X10/${W}x${H}]" 2>/dev/null
-  done
+  SENSOR=$(media-ctl -d $MED -p | grep -o 'imx477 [0-9-]*' | head -1)
+  # Each pad needs its own format, not a blanket one: csi2rxss's two pads and
+  # demosaic's input pad stay Bayer (SRGGB10_1X10), but demosaic's output pad
+  # is already converted to RGB (RBG888_1X24) -- the stock frame-buffer writer
+  # has no Bayer format entry, so this conversion is required, and applying
+  # SRGGB10_1X10 to that pad here would silently break the capture below.
+  media-ctl -d $MED -V "\"$SENSOR\":0 [fmt:SRGGB10_1X10/${W}x${H} field:none]" 2>&1
+  media-ctl -d $MED -V "\"80000000.csi2rxss\":0 [fmt:SRGGB10_1X10/${W}x${H} field:none]" 2>&1
+  media-ctl -d $MED -V "\"80000000.csi2rxss\":1 [fmt:SRGGB10_1X10/${W}x${H} field:none]" 2>&1
+  media-ctl -d $MED -V "\"80040000.v_demosaic\":0 [fmt:SRGGB10_1X10/${W}x${H} field:none]" 2>&1
+  media-ctl -d $MED -V "\"80040000.v_demosaic\":1 [fmt:RBG888_1X24/${W}x${H} field:none]" 2>&1
   media-ctl -d $MED -p 2>&1 | grep -E 'fmt:|entity |video'
   V=$(ls /dev/video* 2>/dev/null | head -1)
   echo "capture device: $V"
